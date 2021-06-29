@@ -1,0 +1,264 @@
+//Remote Control Robot - Toggleable Driving Modes
+
+// INPUTS
+float     nJoyX;              // Joystick X input                     (-128..+127)
+float     nJoyY;              // Joystick Y input                     (-128..+127)
+int       select_state;
+
+// OUTPUTS
+int     nMotMixL;           // Motor (left)  mixed output           (-128..+127)
+int     nMotMixR;           // Motor (right) mixed output           (-128..+127)
+int     PWM_L;
+int     PWM_R;
+char    DIR_L[3];
+char    DIR_R[3];
+
+
+// Clockwise and counter-clockwise definitions.
+// Depending on how you wired your motors, you may need to swap.
+#define CW  0
+#define CCW 1
+
+// Motor definitions:
+#define MOTOR_A 0
+#define MOTOR_B 1
+
+// Joystick Definitions:
+#define joyX A5
+#define joyY A4
+
+// PIN ASSIGNMENTS //
+
+//Motor Control
+const byte PWMA = 3;  // PWM control (speed) for motor A
+const byte PWMB = 11; // PWM control (speed) for motor B
+const byte DIRA = 2;  // Direction control for motor A
+const byte DIRB = 4;  // Direction control for motor B
+// Don't change these! These pins are STATICALLY defined by shield layout
+
+//Infrared Sensors
+const byte LIR = A0;   // Left Sensor
+const byte RIR = A1;   // Right Sensor
+
+// Select Button
+const int SEL = 5;    // Select Button
+
+// CONFIG
+// - fPivYLimt  : The threshold at which the pivot action starts
+//                This threshold is measured in units on the Y-axis
+//                away from the X-axis (Y=0). A greater value will assign
+//                more of the joystick's range to pivot actions.
+//                Allowable range: (0..+127)
+
+float fPivYLimit = 32.0;
+      
+// TEMP VARIABLES
+float   nMotPremixL;    // Motor (left)  premixed output        (-128..+127)
+float   nMotPremixR;    // Motor (right) premixed output        (-128..+127)
+int     nPivSpeed;      // Pivot Speed                          (-128..+127)
+float   fPivScale;      // Balance scale b/w drive and pivot    (   0..1   )
+
+// DRIVING MODE VARIABLES
+int drivestate = 0;     //Tells the robot which state it should drive in by default: 0 - Manual; 1 - Autonomous
+int lastbstate  = 1;    //Used in programming - 1 because this is default value of button
+int changecnt = 0;      //Used in programming
+
+// INFRARED VARIABLES
+int left_sensor_state;
+int right_sensor_state;
+int turn_delay = 25;
+
+void setup()
+{
+  setupArdumoto(); // Setup motor pins
+  Serial.begin(9600);
+  delay(250);
+}
+
+void loop(){
+
+  nJoyX = analogRead(joyX);
+  nJoyY = analogRead(joyY);
+  select_state = digitalRead(SEL); // will be HIGH (1) if not pressed, and LOW (0) if pressed
+
+  //Assigning Drive Mode
+
+  //Button pressed if lastbstate does not equal current
+  if(lastbstate != select_state){
+     
+     changecnt++; //click must be of odd count (releasing button should not trigger a switch)
+       
+    //If previously in manual - switch to auto
+    if(drivestate == 0 && changecnt % 2 != 0){
+      drivestate = 1;
+      Serial.println("CHANGING MODES");
+      Serial.println("Auto Mode\n");
+    }
+
+    //If previously in auto - switch to manual
+    else if(drivestate == 1  && changecnt % 2 != 0){
+      drivestate = 0;
+      Serial.println("CHANGING MODES");
+      Serial.println("Manual Mode\n");
+     }
+  }
+   
+  lastbstate = select_state;
+
+
+  //Differential Steering - Manual Mode
+  
+  if(drivestate == 0){
+
+// Differential Steering Joystick Algorithm
+// ========================================
+//   by Calvin Hass
+//   https://www.impulseadventure.com/elec/
+//
+// Converts a single dual-axis joystick into a differential
+// drive motor control, with support for both drive, turn
+// and pivot operations.
+//
+    
+  //Normalize input from -128 to 127 range
+  nJoyX = -(((nJoyX/1023)*255)-128); //X-axis is inverted
+  nJoyY = ((nJoyY/1023)*255)-128;
+ 
+  // Calculate Drive Turn output due to Joystick X input
+  if(nJoyY >= 0){
+    // Forward
+    nMotPremixL = (nJoyX>=0)? 127.0 : (127.0 + nJoyX);
+    nMotPremixR = (nJoyX>=0)? (127.0 - nJoyX) : 127.0;
+  } 
+
+  else {
+    // Reverse
+    nMotPremixL = (nJoyX>=0)? (127.0 - nJoyX) : 127.0;
+    nMotPremixR = (nJoyX>=0)? 127.0 : (127.0 + nJoyX);
+  }
+
+  // Scale Drive output due to Joystick Y input (throttle)
+  nMotPremixL = nMotPremixL * nJoyY/128.0;
+  nMotPremixR = nMotPremixR * nJoyY/128.0;
+
+  // Now calculate pivot amount
+  // - Strength of pivot (nPivSpeed) based on Joystick X input
+  // - Blending of pivot vs drive (fPivScale) based on Joystick Y input
+  nPivSpeed = nJoyX;
+  fPivScale = (abs(nJoyY)>fPivYLimit)? 0.0 : (1.0 - abs(nJoyY)/fPivYLimit);
+
+  // Calculate final mix of Drive and Pivot
+  nMotMixL = (1.0-fPivScale)*nMotPremixL + fPivScale*( nPivSpeed);
+  nMotMixR = (1.0-fPivScale)*nMotPremixR + fPivScale*(-nPivSpeed);
+
+  // Convert to Motor PWM range
+  
+  PWM_L = abs(nMotMixL)*2;
+  PWM_R = abs(nMotMixR)*2;
+
+  //Test Code
+  /*Serial.print("nMotMixL: ");
+  Serial.print(nMotMixL);
+  Serial.print("\t");
+  Serial.print("nMotMixR: ");
+  Serial.println(nMotMixR);*/
+
+  //Feeding Values to Motor
+
+  if(nMotMixR > 0){
+    driveArdumoto(MOTOR_A, CW, PWM_R); //Right Motor CW
+  }
+
+  if(nMotMixR < 0){
+    driveArdumoto(MOTOR_A, CCW, PWM_R); //Right Motor CCW
+  }
+
+  if(nMotMixL > 0){
+    driveArdumoto(MOTOR_B, CW, PWM_L); //Left Motor CW
+  }
+
+  if(nMotMixL < 0){
+    driveArdumoto(MOTOR_B, CCW, PWM_L); //Left Motor CCW
+  }
+
+   //Test Code
+   /*Serial.print("L-Motor: ");
+   Serial.print(PWM_L);
+   Serial.print("\t");
+   Serial.print("R-Motor: ");
+   Serial.println(PWM_R);*/
+
+  }
+
+  //Autonomous Mode
+  
+  else if(drivestate == 1){
+  
+  left_sensor_state = analogRead(LIR);
+  right_sensor_state = analogRead(RIR);
+
+    if(right_sensor_state > 400 && left_sensor_state < 400) // Right Turn
+    {
+      Serial.println("turning right");
+      driveArdumoto(MOTOR_A, CCW, 85);
+      driveArdumoto(MOTOR_B, CW, 170);
+      delay(turn_delay);
+    }
+
+    if(right_sensor_state < 400 && left_sensor_state > 400) // Left Turn
+    {
+      Serial.println("turning left");
+      driveArdumoto(MOTOR_A, CW, 170);
+      driveArdumoto(MOTOR_B, CCW, 85);
+      delay(turn_delay);
+    }
+
+    if(right_sensor_state < 400 && left_sensor_state < 400) // Forward 
+    {
+      Serial.println("going forward");
+      driveArdumoto(MOTOR_A, CW, 135);
+      driveArdumoto(MOTOR_B, CW, 135);
+    }
+
+    if(right_sensor_state > 400 && left_sensor_state > 400) // Stop
+    { 
+      Serial.println("No longer on track. Stopped");
+      driveArdumoto(MOTOR_A, CW, 0);
+      driveArdumoto(MOTOR_B, CW, 0);
+    }
+  }
+
+ }
+
+// setupArdumoto initialize all pins
+void setupArdumoto() {
+  // All pins setup:
+  pinMode(PWMA, OUTPUT);
+  pinMode(PWMB, OUTPUT);
+  pinMode(DIRA, OUTPUT);
+  pinMode(DIRB, OUTPUT);
+  pinMode(LIR, INPUT);
+  pinMode(RIR, INPUT);
+  pinMode(SEL, INPUT_PULLUP);
+  
+  // Initialize all pins as low:
+  digitalWrite(PWMA, LOW);
+  digitalWrite(PWMB, LOW);
+  digitalWrite(DIRA, LOW);
+  digitalWrite(DIRB, LOW);
+}
+
+// driveArdumoto drives 'motor' in 'dir' direction at 'spd' speed
+void driveArdumoto(byte motor, byte dir, byte spd)
+{
+  if (motor == MOTOR_A)
+  {
+    digitalWrite(DIRA, dir);
+    analogWrite(PWMA, spd);
+  }
+  else if (motor == MOTOR_B)
+  {
+    digitalWrite(DIRB, dir);
+    analogWrite(PWMB, spd);
+  }  
+}
